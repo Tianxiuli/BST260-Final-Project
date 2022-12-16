@@ -12,13 +12,16 @@ library(dbplyr)
 library(psych)
 ```
 
-Read in data / data cleaning
+Read in data / data cleaning / preprocess data
 ```{r}
 dat<-read.csv("stroke.csv")
 
 # left with 3425 observations
 dat<-dat|> filter(gender!="Other", bmi!="N/A", smoking_status!="Unknown")
-
+dat|>
+  group_by(stroke)|>
+  summarise(count=n())
+# preprocess data
 dat<-dat|> 
   mutate(age_group=case_when(
   age<45~"<45",
@@ -55,6 +58,7 @@ dat<-dat|>
   smoking_status=="formerly smoked"~1,
   smoking_status=="smokers"~2
   ))
+
 ```
 
 Sample characteristic
@@ -84,7 +88,8 @@ age|>mutate(percentage=case_when(
   ggplot(aes(stroke,percentage,fill=age_group))+
   geom_bar(stat="identity",alpha=0.5)+
   scale_x_discrete(limits=c(0,1))+
-  ggtitle("Stroke vs. Age Group")
+  ggtitle("Stroke vs. Age Group")+
+  scale_fill_discrete(breaks=c("<45","45-65",">65"))
 
 # Hypertension
 hyper<- dat|> 
@@ -156,7 +161,8 @@ glu|>mutate(percentage=case_when(
   ggplot(aes(stroke,percentage,fill=glucose_group))+
   geom_bar(stat="identity",alpha=0.5)+
   scale_x_discrete(limits=c(0,1))+
-  ggtitle("Stroke vs. Diabetes Group")
+  ggtitle("Stroke vs. Diabetes Group")+
+  scale_fill_discrete(breaks=c("normal","prediabetes","diabetes"))
 
 
 # BMI
@@ -169,7 +175,8 @@ BMI|>mutate(percentage=case_when(
   ggplot(aes(stroke,percentage,fill=BMI_group))+
   geom_bar(stat="identity",alpha=0.5)+
   scale_x_discrete(limits=c(0,1))+
-  ggtitle("Stroke vs. Obesity Group")
+  ggtitle("Stroke vs. Obesity Group")+
+  scale_fill_discrete(breaks=c("underweight","normal","overweight","obesity"))
 
 
 # Smoking status
@@ -185,54 +192,12 @@ smok|>mutate(percentage=case_when(
   ggtitle("Stroke vs. Smoking Status")
 ```
 
-```{r}
-# test
-gen
-hyper
-heart
-marital
-work
-resi
-smok
-mean(dat$age[dat$stroke==1])
-mean(dat$age[dat$stroke==0])
-mean(as.numeric(dat$bmi[dat$stroke==1]))
-mean(as.numeric(dat$bmi[dat$stroke==0]))
-mean(dat$avg_glucose_level[dat$stroke==1])
-mean(dat$avg_glucose_level[dat$stroke==0])
-```
-
 Create training and test sets
 ```{r}
 set.seed(1)
 test_index <- createDataPartition(dat$stroke,times=1,p=0.2,list=FALSE)
 test_set <- dat[test_index,]
 train_set <-dat[-test_index,]
-```
-
-Attempt simple logistic regression - Predict stroke by age only
-```{r}
-age_plot<-dat|>
-  ggplot(aes(age,stroke,group=factor(gender),col=gender))+
-  geom_jitter(width=0,height=0.05)+
-  scale_color_manual(values=c("lightcoral","lightsteelblue"))
-age_plot
-
-ggplot(dat,aes(age,stroke,color=gender))+
-  geom_jitter(width=0,height=0.05)+
-  geom_smooth(method="glm",method.args=list(family="binomial"))+
-  facet_wrap(~gender)+
-  scale_color_manual(values=c("lightcoral","lightsteelblue"))
-
-logit_mod=glm(stroke~age,data=train_set,family="binomial")
-summary(logit_mod)
-predicted=predict(logit_mod,newdata=test_set,type="response")
-
-age_logit_plot<-age_plot+
-  geom_line(data=data.frame(age=test_set$age,stroke=predicted,gender=test_set$gender))
-age_logit_plot
-
-
 ```
 
 Fit Logistic regression model
@@ -247,30 +212,52 @@ summary(glm(stroke~factor(age_cat)+factor(hypertension)+factor(heart_disease)+fa
 glm_fit <- train_set|>glm(stroke~factor(age_cat)+factor(hypertension)+factor(heart_disease)+factor(glucose_cat),data=_,family="binomial")
 p_hat_logit<- predict(glm_fit,newdata=test_set,type="response")
 
+# Determine the threshold
 probs<-seq(0.01, 1, length.out = 50)
-
 PRC<-map_df(probs, function(p){
 y_hat_logit<- ifelse(p_hat_logit>p,1,0)|>factor()
 list(p=p,
      recall=confusionMatrix(y_hat_logit, factor(test_set$stroke))$byClass[["Sensitivity"]],
      precision=confusionMatrix(y_hat_logit, factor(test_set$stroke))$byClass[["Pos Pred Value"]])})
-
 PRC
 
+# Precision and recall curve
 PRC|>
   ggplot(aes(recall,precision))+
   geom_point()+
   geom_line()+
-  ylim(c(0,1))
+  ylim(c(0,1))+
+  ggtitle("Precision vs. Recall Curve")
 
 # choose p=0.0504 as the cutoff point
 y_hat_logit<- ifelse(p_hat_logit>0.0504,1,0)|>factor()
 confusionMatrix(y_hat_logit, factor(test_set$stroke))
 ```
 
+Attempt simple logistic regression - Predict stroke by age only - and compare with the full model
+```{r}
+# Fit model
+mod_simple=glm(stroke~age,data=train_set,family="binomial")
+summary(mod_simple)
 
+# Use p=0.0504 as the cutoff point
+p_hat_simple<-predict(mod_simple,newdata=test_set,type="response")
+y_hat_simple<-ifelse(p_hat_simple>0.0504,1,0)|>factor()
+confusionMatrix(y_hat_simple, factor(test_set$stroke))
 
+# Prediction curve
+y_hat_simple2<-ifelse(p_hat_simple>0.0504,1,0)
+age_plot<-dat|>
+  ggplot(aes(age,stroke,col=gender))+
+  geom_jitter(width=0,height=0.05)+
+  scale_color_manual(values=c("lightcoral","lightsteelblue"))+
+  ggtitle("Stroke vs. Age")+
+  scale_y_discrete(limits=c(0,1))
+age_simple_plot<-age_plot+
+  geom_smooth(data=data.frame(age=test_set$age,stroke=y_hat_simple2,gender=test_set$gender),colour="#000066")
+age_simple_plot
 
+```
 
 
 
